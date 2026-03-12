@@ -28,8 +28,8 @@ DHT dht(DHTPIN, DHTTYPE);
 
 constexpr char WIFI_SSID[] = "Wokwi-GUEST";
 constexpr char WIFI_PASSWORD[] = "";
-constexpr char TOKEN[] = "iAJldkfvCKwcvwUQsHnj";
-constexpr char THINGSBOARD_SERVER[] = "thingsboard.cloud";
+constexpr char TOKEN[] = "jclbdbg1ln3gdhdwi97b";
+constexpr char THINGSBOARD_SERVER[] = "52.73.3.142";
 constexpr uint16_t THINGSBOARD_PORT = 1883U;
 constexpr uint32_t MAX_MESSAGE_SIZE = 1024U;
 constexpr uint32_t SERIAL_DEBUG_BAUD = 115200U;
