@@ -15,17 +15,42 @@
 #include <Shared_Attribute_Update.h>
 #include <ThingsBoard.h>
 
-// --------- NEW: Library for DHT sensor ---------
+#include <HTTPClient.h>
+#include <UrlEncode.h>
+
+// ------------------- WhatsApp -------------------
+String phoneNumber = "+5511971702852";
+String apiKey = "3552849";
+
+void sendMessage(String message) {
+  String url = "https://api.callmebot.com/whatsapp.php?phone=" + phoneNumber +
+               "&apikey=" + apiKey + "&text=" + urlEncode(message);
+
+  HTTPClient http;
+  http.begin(url);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+  int httpResponseCode = http.POST(url);
+
+  if (httpResponseCode == 200) {
+    Serial.println("Mensagem enviada com sucesso");
+  } else {
+    Serial.println("Erro no envio da mensagem");
+    Serial.print("HTTP response code: ");
+    Serial.println(httpResponseCode);
+  }
+
+  http.end();
+}
+
+// ------------------- DHT22 -------------------
 #include <DHT.h>
-
-// --------- NEW: Pins for sensor and external LED ---------
-#define DHTPIN 4        // Pin where the DHT22 is connected
-#define DHTTYPE DHT22   // Sensor type
-#define LED_PIN 2       // Pin for external LED
-
-// --------- NEW: Create DHT object ---------
+#define DHTPIN 4
+#define DHTTYPE DHT22
+#define LED_PIN 2
 DHT dht(DHTPIN, DHTTYPE);
 
+// ------------------- WiFi / ThingsBoard -------------------
 constexpr char WIFI_SSID[] = "Wokwi-GUEST";
 constexpr char WIFI_PASSWORD[] = "";
 constexpr char TOKEN[] = "jclbdbg1ln3gdhdwi97b";
@@ -47,9 +72,9 @@ Attribute_Request<2U, MAX_ATTRIBUTES> attr_request;
 Shared_Attribute_Update<3U, MAX_ATTRIBUTES> shared_update;
 
 const std::array<IAPI_Implementation*, 3U> apis = {
-    &rpc,
-    &attr_request,
-    &shared_update
+  &rpc,
+  &attr_request,
+  &shared_update
 };
 
 ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE, Default_Max_Stack_Size, apis);
@@ -57,23 +82,39 @@ ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE, Default_Max_Stack_Size, apis);
 volatile bool attributesChanged = false;
 volatile int ledMode = 0;
 volatile bool ledState = false;
-constexpr uint16_t BLINKING_INTERVAL_MS_MIN = 10U;
-constexpr uint16_t BLINKING_INTERVAL_MS_MAX = 60000U;
 volatile uint16_t blinkingInterval = 1000U;
 
 uint32_t previousStateChange;
 constexpr int16_t telemetrySendInterval = 2000U;
 uint32_t previousDataSend;
 
-constexpr std::array<const char *, 2U> SHARED_ATTRIBUTES_LIST = {
-  LED_STATE_ATTR,
-  BLINKING_INTERVAL_ATTR
+// ------------------- WhatsApp Hysteresis -------------------
+unsigned long lastWhatsAppSend = 0;
+const unsigned long whatsappInterval = 20000; // 20s
+bool alertActive = false;
+const float TEMP_HIGH = 25.0;
+const float TEMP_LOW  = 24.5;
+
+// ------------------- RPC CALLBACK -------------------
+void processSetLedMode(const JsonVariantConst &data, JsonDocument &response) {
+  int new_mode = data;
+  StaticJsonDocument<1> resp;
+  if (new_mode != 0 && new_mode != 1) {
+    resp["error"] = "Unknown mode!";
+    response.set(resp);
+    return;
+  }
+  ledMode = new_mode;
+  attributesChanged = true;
+  resp["newMode"] = (int)ledMode;
+  response.set(resp);
+}
+
+const std::array<RPC_Callback, 1U> callbacks = {
+  RPC_Callback{ "setLedMode", processSetLedMode }
 };
 
-constexpr std::array<const char *, 1U> CLIENT_ATTRIBUTES_LIST = {
-  LED_MODE_ATTR
-};
-
+// ------------------- WiFi -------------------
 void InitWiFi() {
   Serial.println("Connecting to AP ...");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -85,160 +126,79 @@ void InitWiFi() {
 }
 
 const bool reconnect() {
-  const wl_status_t status = WiFi.status();
-  if (status == WL_CONNECTED) {
-    return true;
-  }
+  if (WiFi.status() == WL_CONNECTED) return true;
   InitWiFi();
   return true;
 }
 
-void processSetLedMode(const JsonVariantConst &data, JsonDocument &response) {
-  Serial.println("Received the set led state RPC method");
-  int new_mode = data;
-  Serial.print("Mode to change: ");
-  Serial.println(new_mode);
-  StaticJsonDocument<1> response_doc;
-  if (new_mode != 0 && new_mode != 1) {
-    response_doc["error"] = "Unknown mode!";
-    response.set(response_doc);
-    return;
-  }
-  ledMode = new_mode;
-  attributesChanged = true;
-  response_doc["newMode"] = (int)ledMode;
-  response.set(response_doc);
-}
-
-const std::array<RPC_Callback, 1U> callbacks = {
-  RPC_Callback{ "setLedMode", processSetLedMode }
-};
-
-void processSharedAttributes(const JsonObjectConst &data) {
-  for (auto it = data.begin(); it != data.end(); ++it) {
-    if (strcmp(it->key().c_str(), BLINKING_INTERVAL_ATTR) == 0) {
-      const uint16_t new_interval = it->value().as<uint16_t>();
-      if (new_interval >= BLINKING_INTERVAL_MS_MIN && new_interval <= BLINKING_INTERVAL_MS_MAX) {
-        blinkingInterval = new_interval;
-        Serial.print("Blinking interval is set to: ");
-        Serial.println(new_interval);
-      }
-    } else if (strcmp(it->key().c_str(), LED_STATE_ATTR) == 0) {
-      ledState = it->value().as<bool>();
-      // --------- MODIFIED: now using LED_PIN instead of LED_BUILTIN ---------
-      digitalWrite(LED_PIN, ledState);
-      Serial.print("LED state is set to: ");
-      Serial.println(ledState);
-    }
-  }
-  attributesChanged = true;
-}
-
-void processClientAttributes(const JsonObjectConst &data) {
-  for (auto it = data.begin(); it != data.end(); ++it) {
-    if (strcmp(it->key().c_str(), LED_MODE_ATTR) == 0) {
-      const uint16_t new_mode = it->value().as<uint16_t>();
-      ledMode = new_mode;
-    }
-  }
-}
-
-void requestTimedOut() {
-  Serial.printf("Attribute request timed out, did not receive a response in (%llu) microseconds.\n", REQUEST_TIMEOUT_MICROSECONDS);
-}
-
-const Shared_Attribute_Callback<MAX_ATTRIBUTES> attributes_callback(&processSharedAttributes, SHARED_ATTRIBUTES_LIST.cbegin(), SHARED_ATTRIBUTES_LIST.cend());
-const Attribute_Request_Callback<MAX_ATTRIBUTES> attribute_shared_request_callback(&processSharedAttributes, REQUEST_TIMEOUT_MICROSECONDS, &requestTimedOut, SHARED_ATTRIBUTES_LIST);
-const Attribute_Request_Callback<MAX_ATTRIBUTES> attribute_client_request_callback(&processClientAttributes, REQUEST_TIMEOUT_MICROSECONDS, &requestTimedOut, CLIENT_ATTRIBUTES_LIST);
-
+// ------------------- SETUP -------------------
 void setup() {
   Serial.begin(SERIAL_DEBUG_BAUD);
-
-  // --------- MODIFIED: initialize external LED and DHT22 ---------
   pinMode(LED_PIN, OUTPUT);
   dht.begin();
-
   delay(1000);
   InitWiFi();
 }
 
+// ------------------- LOOP -------------------
 void loop() {
   delay(10);
 
-  if (!reconnect()) {
-    return;
-  }
+  if (!reconnect()) return;
 
   if (!tb.connected()) {
-    Serial.print("Connecting to: ");
-    Serial.print(THINGSBOARD_SERVER);
-    Serial.print(" with token ");
-    Serial.println(TOKEN);
-    if (!tb.connect(THINGSBOARD_SERVER, TOKEN, THINGSBOARD_PORT)) {
-      Serial.println("Failed to connect");
-      return;
-    }
+    if (!tb.connect(THINGSBOARD_SERVER, TOKEN, THINGSBOARD_PORT)) return;
+
     tb.sendAttributeData("macAddress", WiFi.macAddress().c_str());
-    Serial.println("Subscribing for RPC...");
-    if (!rpc.RPC_Subscribe(callbacks.cbegin(), callbacks.cend())) {
-      Serial.println("Failed to subscribe for RPC");
-      return;
-    }
-    if (!shared_update.Shared_Attributes_Subscribe(attributes_callback)) {
-      Serial.println("Failed to subscribe for shared attribute updates");
-      return;
-    }
-    Serial.println("Subscribe done");
-    if (!attr_request.Shared_Attributes_Request(attribute_shared_request_callback)) {
-      Serial.println("Failed to request for shared attributes");
-      return;
-    }
-    if (!attr_request.Client_Attributes_Request(attribute_client_request_callback)) {
-      Serial.println("Failed to request for client attributes");
-      return;
-    }
-  }
 
-  if (attributesChanged) {
-    attributesChanged = false;
-    if (ledMode == 0) {
-      previousStateChange = millis();
-    }
-    tb.sendTelemetryData(LED_MODE_ATTR, ledMode);
-    tb.sendTelemetryData(LED_STATE_ATTR, ledState);
-    tb.sendAttributeData(LED_MODE_ATTR, ledMode);
-    tb.sendAttributeData(LED_STATE_ATTR, ledState);
-  }
-
-  if (ledMode == 1 && millis() - previousStateChange > blinkingInterval) {
-    previousStateChange = millis();
-    ledState = !ledState;
-    tb.sendTelemetryData(LED_STATE_ATTR, ledState);
-    tb.sendAttributeData(LED_STATE_ATTR, ledState);
-
-    // --------- MODIFIED: external LED instead of LED_BUILTIN ---------
-    digitalWrite(LED_PIN, ledState);
+    Serial.println("Subscribing RPC...");
+    rpc.RPC_Subscribe(callbacks.cbegin(), callbacks.cend());
   }
 
   if (millis() - previousDataSend > telemetrySendInterval) {
     previousDataSend = millis();
 
-    // --------- MODIFIED: use real DHT22 data ---------
     float temperature = dht.readTemperature();
-    float humidity = dht.readHumidity();
 
-    if (!isnan(temperature) && !isnan(humidity)) {
+    if (!isnan(temperature)) {
       tb.sendTelemetryData("temperature", temperature);
-      tb.sendTelemetryData("humidity", humidity);
-    } else {
-      Serial.println("Failed to read from DHT sensor!");
     }
 
-    tb.sendAttributeData("rssi", WiFi.RSSI());
-    tb.sendAttributeData("channel", WiFi.channel());
-    tb.sendAttributeData("bssid", WiFi.BSSIDstr().c_str());
-    tb.sendAttributeData("localIp", WiFi.localIP().toString().c_str());
-    tb.sendAttributeData("ssid", WiFi.SSID().c_str());
+    // ------------------- ALERTA WHATSAPP COM HISTERESI -------------------
+    if (!isnan(temperature)) {
+
+      if (temperature > TEMP_HIGH && !alertActive) {
+        alertActive = true;
+        lastWhatsAppSend = 0;
+      }
+
+// --- NORMALIZAÇÃO ---
+if (temperature < TEMP_LOW && alertActive) {
+
+    sendMessage("Temperatura da sala do servidor dentro dos padroes.");
+    delay(1500);  // evita erro 203 por envio duplo
+
+    Serial.println("Mensagem de normalizacao enviada via WhatsApp!");
+
+    alertActive = false;
+}
+
+
+// --- ALERTA ---
+if (alertActive && millis() - lastWhatsAppSend >= whatsappInterval) {
+
+    String msg = "Temperatura da sala do servidor acima do esperado. Temperatura atual ";
+    msg += String(temperature, 1);
+    msg += " C";
+
+    sendMessage(msg);
+    delay(1500);  // evita erro 203 por envio repetido
+
+    lastWhatsAppSend = millis();
+
+    Serial.println("Alerta de temperatura enviado via WhatsApp!");
+}
+    }
   }
 
   tb.loop();

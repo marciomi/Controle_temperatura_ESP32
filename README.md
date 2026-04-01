@@ -222,6 +222,4 @@ For questions or issues:
 - Check [Wokwi documentation](https://docs.wokwi.com/)
 
 ---
-**Author**: Mirutec - Roger Chung  
-**Version**: 1.0  
-**Date**: September 2025
+
