@@ -10,7 +10,6 @@
 #endif
 
 #include <Arduino_MQTT_Client.h>
-#include <Server_Side_RPC.h>
 #include <Attribute_Request.h>
 #include <Shared_Attribute_Update.h>
 #include <ThingsBoard.h>
@@ -61,58 +60,27 @@ constexpr uint32_t SERIAL_DEBUG_BAUD = 115200U;
 constexpr size_t MAX_ATTRIBUTES = 3U;
 constexpr uint64_t REQUEST_TIMEOUT_MICROSECONDS = 5000U * 1000U;
 
-constexpr const char BLINKING_INTERVAL_ATTR[] = "blinkingInterval";
-constexpr const char LED_MODE_ATTR[] = "ledMode";
-constexpr const char LED_STATE_ATTR[] = "ledState";
-
 WiFiClient wifiClient;
 Arduino_MQTT_Client mqttClient(wifiClient);
-Server_Side_RPC<3U, 5U> rpc;
 Attribute_Request<2U, MAX_ATTRIBUTES> attr_request;
 Shared_Attribute_Update<3U, MAX_ATTRIBUTES> shared_update;
 
-const std::array<IAPI_Implementation*, 3U> apis = {
-  &rpc,
+const std::array<IAPI_Implementation*, 2U> apis = {
   &attr_request,
   &shared_update
 };
 
 ThingsBoard tb(mqttClient, MAX_MESSAGE_SIZE, Default_Max_Stack_Size, apis);
 
-volatile bool attributesChanged = false;
-volatile int ledMode = 0;
-volatile bool ledState = false;
-volatile uint16_t blinkingInterval = 1000U;
-
-uint32_t previousStateChange;
 constexpr int16_t telemetrySendInterval = 2000U;
 uint32_t previousDataSend;
 
 // ------------------- WhatsApp Hysteresis -------------------
 unsigned long lastWhatsAppSend = 0;
-const unsigned long whatsappInterval = 20000; // 20s
+const unsigned long whatsappInterval = 600000; // 10 minutos (10 * 60 * 1000 ms)
 bool alertActive = false;
 const float TEMP_HIGH = 25.0;
 const float TEMP_LOW  = 24.5;
-
-// ------------------- RPC CALLBACK -------------------
-void processSetLedMode(const JsonVariantConst &data, JsonDocument &response) {
-  int new_mode = data;
-  StaticJsonDocument<1> resp;
-  if (new_mode != 0 && new_mode != 1) {
-    resp["error"] = "Unknown mode!";
-    response.set(resp);
-    return;
-  }
-  ledMode = new_mode;
-  attributesChanged = true;
-  resp["newMode"] = (int)ledMode;
-  response.set(resp);
-}
-
-const std::array<RPC_Callback, 1U> callbacks = {
-  RPC_Callback{ "setLedMode", processSetLedMode }
-};
 
 // ------------------- WiFi -------------------
 void InitWiFi() {
@@ -150,54 +118,55 @@ void loop() {
     if (!tb.connect(THINGSBOARD_SERVER, TOKEN, THINGSBOARD_PORT)) return;
 
     tb.sendAttributeData("macAddress", WiFi.macAddress().c_str());
-
-    Serial.println("Subscribing RPC...");
-    rpc.RPC_Subscribe(callbacks.cbegin(), callbacks.cend());
   }
 
   if (millis() - previousDataSend > telemetrySendInterval) {
     previousDataSend = millis();
 
     float temperature = dht.readTemperature();
+    float humidity = dht.readHumidity();
 
     if (!isnan(temperature)) {
       tb.sendTelemetryData("temperature", temperature);
+
+      // Controle do LED com base na temperatura
+      if (temperature > TEMP_HIGH) {
+        digitalWrite(LED_PIN, HIGH); // Acende o LED
+      } else {
+        digitalWrite(LED_PIN, LOW);  // Apaga o LED
+      }
+    }
+
+    if (!isnan(humidity)) {
+      tb.sendTelemetryData("humidity", humidity);
     }
 
     // ------------------- ALERTA WHATSAPP COM HISTERESI -------------------
     if (!isnan(temperature)) {
-
       if (temperature > TEMP_HIGH && !alertActive) {
         alertActive = true;
         lastWhatsAppSend = 0;
       }
 
-// --- NORMALIZAÇÃO ---
-if (temperature < TEMP_LOW && alertActive) {
+      // --- NORMALIZAÇÃO ---
+      if (temperature < TEMP_LOW && alertActive) {
+        sendMessage("Temperatura da sala do servidor dentro dos padroes.");
+        delay(1500);  // evita erro 203 por envio duplo
+        Serial.println("Mensagem de normalizacao enviada via WhatsApp!");
+        alertActive = false;
+      }
 
-    sendMessage("Temperatura da sala do servidor dentro dos padroes.");
-    delay(1500);  // evita erro 203 por envio duplo
+      // --- ALERTA ---
+      if (alertActive && millis() - lastWhatsAppSend >= whatsappInterval) {
+        String msg = "Temperatura da sala do servidor acima do esperado. Temperatura atual ";
+        msg += String(temperature, 1);
+        msg += " C";
 
-    Serial.println("Mensagem de normalizacao enviada via WhatsApp!");
-
-    alertActive = false;
-}
-
-
-// --- ALERTA ---
-if (alertActive && millis() - lastWhatsAppSend >= whatsappInterval) {
-
-    String msg = "Temperatura da sala do servidor acima do esperado. Temperatura atual ";
-    msg += String(temperature, 1);
-    msg += " C";
-
-    sendMessage(msg);
-    delay(1500);  // evita erro 203 por envio repetido
-
-    lastWhatsAppSend = millis();
-
-    Serial.println("Alerta de temperatura enviado via WhatsApp!");
-}
+        sendMessage(msg);
+        delay(1500);  // evita erro 203 por envio repetido
+        lastWhatsAppSend = millis();
+        Serial.println("Alerta de temperatura enviado via WhatsApp!");
+      }
     }
   }
 
