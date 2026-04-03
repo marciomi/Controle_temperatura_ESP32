@@ -132,8 +132,11 @@ void loop() {
       // Controle do LED com base na temperatura
       if (temperature > TEMP_HIGH) {
         digitalWrite(LED_PIN, HIGH); // Acende o LED
+        tb.sendTelemetryData("ledState", 1); // envia estado ligado
+
       } else {
         digitalWrite(LED_PIN, LOW);  // Apaga o LED
+        tb.sendTelemetryData("ledState", 0); // envia estado desligado
       }
     }
 
