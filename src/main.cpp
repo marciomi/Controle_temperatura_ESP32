@@ -77,7 +77,7 @@ uint32_t previousDataSend;
 
 // ------------------- WhatsApp Hysteresis -------------------
 unsigned long lastWhatsAppSend = 0;
-const unsigned long whatsappInterval = 600000; // 10 minutos (10 * 60 * 1000 ms)
+const unsigned long whatsappInterval = 600000; // 10 minutos
 bool alertActive = false;
 const float TEMP_HIGH = 25.0;
 const float TEMP_LOW  = 24.5;
@@ -133,7 +133,6 @@ void loop() {
       if (temperature > TEMP_HIGH) {
         digitalWrite(LED_PIN, HIGH); // Acende o LED
         tb.sendTelemetryData("ledState", 1); // envia estado ligado
-
       } else {
         digitalWrite(LED_PIN, LOW);  // Apaga o LED
         tb.sendTelemetryData("ledState", 0); // envia estado desligado
@@ -146,9 +145,18 @@ void loop() {
 
     // ------------------- ALERTA WHATSAPP COM HISTERESI -------------------
     if (!isnan(temperature)) {
+      // --- ALERTA IMEDIATO ---
       if (temperature > TEMP_HIGH && !alertActive) {
         alertActive = true;
-        lastWhatsAppSend = 0;
+
+        String msg = "Temperatura da sala do servidor acima do esperado. Temperatura atual ";
+        msg += String(temperature, 1);
+        msg += " C";
+
+        sendMessage(msg);
+        delay(1500);  // evita erro 203 por envio repetido
+        lastWhatsAppSend = millis();
+        Serial.println("Alerta de temperatura enviado via WhatsApp!");
       }
 
       // --- NORMALIZAÇÃO ---
@@ -159,7 +167,7 @@ void loop() {
         alertActive = false;
       }
 
-      // --- ALERTA ---
+      // --- ALERTAS REPETIDOS A CADA 10 MIN ---
       if (alertActive && millis() - lastWhatsAppSend >= whatsappInterval) {
         String msg = "Temperatura da sala do servidor acima do esperado. Temperatura atual ";
         msg += String(temperature, 1);
